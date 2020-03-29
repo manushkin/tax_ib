@@ -148,9 +148,10 @@ def calc_tax(trades):
 
 def print_tax(taxitems):
     rows = []
-    for titem in taxitems:
+    for i, titem in enumerate(taxitems):
         buy, sel = titem.buy, titem.sel
         rows.append({
+            'N': i+1,
             'symbol': buy.symbol,
             'date_buy': buy.date,
             'date_sell': sel.date,
@@ -176,7 +177,7 @@ def print_tax(taxitems):
             if isinstance(val, float):
                 row[key] = '{:.2f}'.format(round(val, 2))
 
-    keys = ['symbol', 'date_sell', 'date_buy', 'price_sell', 'price_buy', 'quantity', 'cbrf_sel', 'cbrf_buy', 'fee', 'revenue_usd', 'revenue_rur', 'tax_rur']
+    keys = ['N', 'symbol', 'date_sell', 'date_buy', 'price_sell', 'price_buy', 'quantity', 'cbrf_sel', 'cbrf_buy', 'fee', 'revenue_usd', 'revenue_rur', 'tax_rur']
     pt = prettytable.PrettyTable(keys)
     pt.align = 'r'
     pt.align['symbol'] = 'l'
