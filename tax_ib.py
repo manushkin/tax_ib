@@ -8,7 +8,16 @@ import csv
 import datetime
 import glob
 
-import prettytable
+try:
+    import click
+    import prettytable
+except ImportError:
+    print 'Error: cant import click|prettytable'
+    print
+    print '1. use anaconda'
+    print 'or'
+    print '2. pip install click prettytable'
+    exit(1)
 
 _CBRF = None
 
@@ -29,6 +38,32 @@ class Trade(object):
 
     def __str__(self):
         return 'sym: {self.symbol}, date: {self.date}, quantity: {self.quantity}, price: {self.price}'.format(self=self)
+
+
+class Dividend(object):
+    def __init__(self, symbol, date, amount, **kwds):
+        self.symbol = symbol
+        self.date = date
+        self.amount = amount
+
+        self.broker_tax = 0
+
+    @property
+    def tax_ib(self):
+        return self.broker_tax
+
+    @property
+    def tax_me(self):
+        return self.amount * 0.13 - int(round(self.broker_tax, 0))
+
+    @property
+    def tax_me_rur(self):
+        rate = usd_to_rub(self.date)
+        tax_rur = self.amount * rate * 0.13 - int(round(self.broker_tax * rate, 0))
+        return int(round(tax_rur, 0))
+
+    def __str__(self):
+        return 'DIV sym: {self.symbol}, date: {self.date}, amount: {self.amount}'.format(self=self)
 
 
 def str2date(s):
@@ -76,27 +111,43 @@ def parse_trades(filepaths):
     return trades
 
 
-def print_trades(trades):
-    keys = ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl']
-    rows = []
-    for i, trade in enumerate(trades):
-        row = {'N': i+1}
-        for key in keys:
-            val = trade.__dict__[key]
-            if isinstance(val, float):
-                val = '{:.2f}'.format(round(val, 2))
-            row[key] = val
-        rows.append(row)
+def parse_dividends(filepaths):
+    dividends = {}
+    for filepath in filepaths:
+        with open(filepath) as fobj:
+            keys = None
+            for i, row in enumerate(csv.reader(fobj)):
+                if row[0] == 'Dividends':
+                    if row[1] == 'Header':
+                        keys = row
+                    elif row[1] == 'Data':
+                        kv = dict(zip(keys, row))
+                        if kv['Currency'] == 'Total':
+                            continue
+                        date = str2date(kv['Date'])
+                        symbol = kv['Description'].partition('(')[0].strip()
+                        dividends[(date, symbol)] = Dividend(
+                            symbol=symbol,
+                            date=date,
+                            amount=float(kv['Amount']),
+                        )
+                elif row[0] == 'Withholding Tax':
+                    if row[1] == 'Header':
+                        keys = row
+                    elif row[1] == 'Data':
+                        kv = dict(zip(keys, row))
+                        if kv['Currency'] == 'Total':
+                            continue
+                        date = str2date(kv['Date'])
+                        symbol = kv['Description'].partition('(')[0].strip()
+                        tax = abs(float(kv['Amount']))
 
-    keys.insert(0, 'N')
-    pt = prettytable.PrettyTable(keys)
-    pt.align = 'r'
-    pt.align['symbol'] = 'l'
-    for row in rows:
-        row = [row.get(key, '-') for key in keys]
-        pt.add_row(row)
+                        div = dividends[(date, symbol)]
+                        div.broker_tax = tax
 
-    print pt.get_string()
+    divs = dividends.values()
+    divs.sort(key=lambda x: (x.date, x.symbol))
+    return divs
 
 
 class TaxItem(object):
@@ -104,9 +155,20 @@ class TaxItem(object):
         self.buy = buy
         self.sel = sel
 
+        self.symbol = self.buy.symbol
         self.revenue_usd = buy.quantity * (float(sel.price) - float(buy.price)) + sel.fee + buy.fee
         self.revenue_rur = buy.quantity * (float(sel.price) * usd_to_rub(sel.date) - float(buy.price) * usd_to_rub(buy.date)) + sel.fee * usd_to_rub(sel.date) + buy.fee * usd_to_rub(buy.date)
         self.tax_rur = self.revenue_rur * 0.13
+
+        self.date_buy = buy.date
+        self.date_sell = sel.date
+        self.price_buy = float(buy.price)
+        self.price_sell = float(sel.price)
+        self.quantity = sel.quantity
+        self.fee = sel.fee + buy.fee
+        self.cbrf_buy = usd_to_rub(buy.date)
+        self.cbrf_sel = usd_to_rub(sel.date)
+        self.tax_rur = round(self.tax_rur, 2)
 
 
 def calc_tax(trades):
@@ -146,38 +208,29 @@ def calc_tax(trades):
     return items
 
 
-def print_tax(taxitems):
+def print_table(items, keys, keys_total=None):
     rows = []
-    for i, titem in enumerate(taxitems):
-        buy, sel = titem.buy, titem.sel
-        rows.append({
-            'N': i+1,
-            'symbol': buy.symbol,
-            'date_buy': buy.date,
-            'date_sell': sel.date,
-            'price_buy': float(buy.price),
-            'price_sell': float(sel.price),
-            'quantity': sel.quantity,
-            'fee': sel.fee + buy.fee,
-            'revenue_usd': titem.revenue_usd,
-            'cbrf_buy':  usd_to_rub(buy.date),
-            'cbrf_sel':  usd_to_rub(sel.date),
-            'revenue_rur': titem.revenue_rur,
-            'tax_rur': round(titem.tax_rur, 2),
-        })
+    for i, item in enumerate(items):
+        row = {'N': i+1}
+        for key in keys:
+            row[key] = getattr(item, key)
+        rows.append(row)
 
-    total = {}
-    for row in rows:
-        for key in ['fee', 'revenue_usd', 'revenue_rur', 'tax_rur']:
-            total[key] = total.get(key, 0) + row[key]
-    rows.append(total)
+    if keys_total:
+        total = {}
+        for row in rows:
+            for key in keys_total:
+                val = row[key]
+                if isinstance(val, (int, float)):
+                    total[key] = total.get(key, 0) + val
+        rows.append(total)
 
     for row in rows:
         for key, val in row.iteritems():
             if isinstance(val, float):
                 row[key] = '{:.2f}'.format(round(val, 2))
 
-    keys = ['N', 'symbol', 'date_sell', 'date_buy', 'price_sell', 'price_buy', 'quantity', 'cbrf_sel', 'cbrf_buy', 'fee', 'revenue_usd', 'revenue_rur', 'tax_rur']
+    keys = ['N'] + keys[:]
     pt = prettytable.PrettyTable(keys)
     pt.align = 'r'
     pt.align['symbol'] = 'l'
@@ -188,6 +241,9 @@ def print_tax(taxitems):
 
 
 def read_cbrf(filepaths):
+    """
+    https://cbr.ru/currency_base/dynamics/?UniDbQuery.Posted=True&UniDbQuery.mode=2&UniDbQuery.date_req1=&UniDbQuery.date_req2=&UniDbQuery.VAL_NM_RQ=R01235&UniDbQuery.From=01.01.2010&UniDbQuery.To=28.03.2020
+    """
     date2curs = {}
     for filepath in filepaths:
         prev = None
@@ -218,20 +274,98 @@ def usd_to_rub(date):
     return float(_CBRF[date])
 
 
-def main():
-    trades = parse_trades(glob.glob('ib_reports/*.csv'))
+def process_trades(ctx, year):
+    trades = parse_trades(ctx.ib_reports_files)
 
     print '===Trades'
-    print_trades(trades)
+    print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'])
 
     year2titems = defaultdict(list)
     for titem in calc_tax(trades):
         year2titems[titem.sel.date.year].append(titem)
-    for year in sorted(year2titems):
+
+    def print_one(year):
+        keys = ['symbol', 'date_sell', 'date_buy', 'price_sell', 'price_buy', 'quantity', 'cbrf_sel', 'cbrf_buy', 'fee', 'revenue_usd', 'revenue_rur', 'tax_rur']
+        keys_total = ['fee', 'revenue_usd', 'revenue_rur', 'tax_rur']
         print '==={}'.format(year)
         titems = year2titems[year]
         titems.sort(key=lambda x: x.sel.date)
-        print_tax(year2titems[year])
+        print_table(year2titems[year], keys, keys_total)
+
+    if year:
+        print_one(year)
+    else:
+        for year in sorted(year2titems):
+            print_one(year)
+
+
+def process_dividends(ctx, year):
+    dividends = parse_dividends(ctx.ib_reports_files)
+
+    year2divs = defaultdict(list)
+    for div in dividends:
+        year2divs[div.date.year].append(div)
+
+    keys = ['symbol', 'date', 'amount', 'tax_ib', 'tax_me', 'tax_me_rur']
+    keys_total = ['amount', 'tax_ib', 'tax_me', 'tax_me_rur']
+    if year:
+        print '==={}'.format(year)
+        print_table(year2divs[year], keys, keys_total)
+    else:
+        for year in sorted(year2divs):
+            print '==={}'.format(year)
+            print_table(year2divs[year], keys, keys_total)
+
+
+@click.group(context_settings=dict(help_option_names=['-h', '--help']), invoke_without_command=True)
+@click.option('-d', '--reports-dir', 'ib_reports_dir', default='ib_reports')
+@click.pass_context
+def cli(ctx, ib_reports_dir):
+    """IB tax helper for Russia Federation.
+    """
+    class Context(object):
+        def __init__(self):
+            self.ib_reports_dir = 'ib_reports'
+
+        @property
+        def ib_reports_files(self):
+            return glob.glob('{}/*.csv'.format(self.ib_reports_dir))
+
+    ctx.obj = Context()
+
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@cli.command()
+@click.argument('year', default=0, type=int)
+@click.pass_obj
+def trades(ctx, year):
+    """Print trades info & tax.
+    """
+    process_trades(ctx, year)
+
+
+@cli.command()
+@click.argument('year', default=0, type=int)
+@click.pass_obj
+def dividends(ctx, year):
+    """Print dividends info & tax.
+    """
+    process_dividends(ctx, year)
+
+
+@cli.command()
+@click.argument('year', default=0, type=int)
+@click.pass_obj
+def divs(ctx, year):
+    """Print dividends info & tax.
+    """
+    process_dividends(ctx, year)
+
+
+def main():
+    cli()
 
 
 if __name__ == '__main__':
