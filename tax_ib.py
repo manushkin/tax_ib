@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 # coding: utf-8
 
 from collections import defaultdict
@@ -25,7 +25,6 @@ _CBRF = None
 class Trade(object):
     def __init__(self, symbol, date, quantity, price, fee, **kwds):
         self.is_buying = quantity > 0
-
         self.symbol = symbol
         self.date = date
         self.quantity = quantity
@@ -51,6 +50,11 @@ class Dividend(object):
     @property
     def tax_ib(self):
         return self.broker_tax
+
+    @property
+    def tax_ib_rur(self):
+        rate = usd_to_rub(self.date)
+        return round(self.broker_tax * rate, 2)
 
     @property
     def tax_me(self):
@@ -102,7 +106,7 @@ def parse_trades(filepaths):
                         date=str2date(trade['Date/Time']),
                         quantity=int(trade['Quantity']),
                         price=float(trade['T. Price']),
-                        fee=parse_fee(trade['Comm/Fee']),
+                        fee=abs(parse_fee(trade['Comm/Fee'])),
                         proceeds=float(trade['Proceeds']),
                         basis=float(trade['Basis']),
                         realized_pl=float(trade['Realized P/L']),
@@ -151,60 +155,60 @@ def parse_dividends(filepaths):
 
 
 class TaxItem(object):
-    def __init__(self, buy, sel):
-        self.buy = buy
-        self.sel = sel
-
-        self.symbol = self.buy.symbol
-        self.revenue_usd = buy.quantity * (float(sel.price) - float(buy.price)) + sel.fee + buy.fee
-        self.revenue_rur = buy.quantity * (float(sel.price) * usd_to_rub(sel.date) - float(buy.price) * usd_to_rub(buy.date)) + sel.fee * usd_to_rub(sel.date) + buy.fee * usd_to_rub(buy.date)
-        self.tax_rur = self.revenue_rur * 0.13
-
-        self.date_buy = buy.date
+    def __init__(self, buy_list, sel):
+        self.symbol = sel.symbol
+        self.quantity = abs(sel.quantity)
         self.date_sell = sel.date
-        self.price_buy = float(buy.price)
-        self.price_sell = float(sel.price)
-        self.quantity = sel.quantity
-        self.fee = sel.fee + buy.fee
-        self.cbrf_buy = usd_to_rub(buy.date)
-        self.cbrf_sel = usd_to_rub(sel.date)
-        self.tax_rur = round(self.tax_rur, 2)
+        self.price_sell = sel.price
+        quantity = self.quantity
+
+        self.buy_usd = sum(buy.quantity * buy.price + buy.fee for buy in buy_list)
+        self.sell_usd = quantity * sel.price - sel.fee
+        self.profit_usd = self.sell_usd - self.buy_usd
+        self.buy_rur = sum(usd_to_rub(buy.date) * (buy.quantity * buy.price + buy.fee) for buy in buy_list)
+        self.sell_rur = self.sell_usd * usd_to_rub(sel.date)
+        self.profit_rur = self.sell_rur - self.buy_rur
+
+        self.tax_rur = round(self.profit_rur * 0.13, 0)
+        self.price_buy = self.buy_usd / quantity
+        self.fee = sel.fee + sum(buy.fee for buy in buy_list)
 
 
 def calc_tax(trades):
     items = []
     sym2blist = defaultdict(list)
+    slist = []
     for trade in trades:
         if trade.is_buying:
             # buy
             sym2blist[trade.symbol].append(trade)
             continue
-        # sell, sel.quantity отрицательное число
-        blist = sym2blist[trade.symbol]
-        sel = trade
-        while sel.quantity:
+        slist.append(trade)
+
+    for sel in slist:
+        blist = sym2blist[sel.symbol]
+        buy_list = []
+        quantity = abs(sel.quantity)
+
+        while quantity:
             buy = blist[0]
-            # sel.fee, buy.fee = float(sel.fee), float(buy.fee)
-            if buy.quantity + sel.quantity > 0:
+            if buy.quantity > quantity:
                 # продаем меньше чем первая покупка в списке
-                quantity = -sel.quantity
-                tr1 = copy.copy(buy)
-                tr1.quantity = quantity
-                tr1.fee = round(tr1.fee * quantity / buy.quantity, 2)
+                tr = copy.copy(buy)
+                tr.quantity = quantity
+                tr.fee = round(tr.fee * quantity / buy.quantity, 2)
                 buy.quantity -= quantity
-                buy.fee = round(buy.fee - tr1.fee, 2)
-                items.append(TaxItem(tr1, sel))
+                buy.fee = round(buy.fee - tr.fee, 2)
+                buy_list.append(tr)
                 break
-            else:  # buy.quantity + sel.quantity < 0
+            else:  # buy.quantity <= quantity
                 # продаем больше или равно чем первая покупка в списке
                 blist.pop(0)
-                # print sel.symbol, sel.quantity, buy.quantity
-                tr2 = copy.copy(sel)
-                tr2.quantity = buy.quantity
-                tr2.fee = round(tr2.fee * buy.quantity / -sel.quantity, 2)
-                sel.quantity += buy.quantity
-                sel.fee -= tr2.fee
-                items.append(TaxItem(buy, tr2))
+                quantity -= buy.quantity
+                buy_list.append(buy)
+
+        items.append(TaxItem(buy_list, sel))
+
     return items
 
 
@@ -274,22 +278,29 @@ def usd_to_rub(date):
     return float(_CBRF[date])
 
 
-def process_trades(ctx, year):
+def process_trades(ctx, year, verbose=False):
     trades = parse_trades(ctx.ib_reports_files)
 
-    print '===Trades'
-    print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'])
+    # print '===Trades'
+    # print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'])
+
+    keys = [
+        'symbol', 'date_sell', 'quantity', 'price_sell', 'price_buy',
+        'fee', 'sell_usd', 'buy_usd', 'profit_usd', 'sell_rur', 'buy_rur', 'profit_rur', 'tax_rur',
+    ]
+    keys_total = ['fee', 'sell_usd', 'buy_usd', 'profit_usd', 'sell_rur', 'buy_rur', 'profit_rur', 'tax_rur']
+    if not verbose:
+        keys = ['symbol', 'date_sell', 'quantity', 'sell_usd', 'buy_rur', 'tax_rur']
+        keys_total = ['sell_usd', 'buy_rur', 'tax_rur']
 
     year2titems = defaultdict(list)
     for titem in calc_tax(trades):
-        year2titems[titem.sel.date.year].append(titem)
+        year2titems[titem.date_sell.year].append(titem)
 
     def print_one(year):
-        keys = ['symbol', 'date_sell', 'date_buy', 'price_sell', 'price_buy', 'quantity', 'cbrf_sel', 'cbrf_buy', 'fee', 'revenue_usd', 'revenue_rur', 'tax_rur']
-        keys_total = ['fee', 'revenue_usd', 'revenue_rur', 'tax_rur']
         print '==={}'.format(year)
         titems = year2titems[year]
-        titems.sort(key=lambda x: x.sel.date)
+        titems.sort(key=lambda x: x.date_sell)
         print_table(year2titems[year], keys, keys_total)
 
     if year:
@@ -306,8 +317,8 @@ def process_dividends(ctx, year):
     for div in dividends:
         year2divs[div.date.year].append(div)
 
-    keys = ['symbol', 'date', 'amount', 'tax_ib', 'tax_me', 'tax_me_rur']
-    keys_total = ['amount', 'tax_ib', 'tax_me', 'tax_me_rur']
+    keys = ['symbol', 'date', 'amount', 'tax_ib', 'tax_ib_rur', 'tax_me', 'tax_me_rur']
+    keys_total = ['amount', 'tax_ib', 'tax_ib_rur', 'tax_me', 'tax_me_rur']
     if year:
         print '==={}'.format(year)
         print_table(year2divs[year], keys, keys_total)
@@ -333,17 +344,21 @@ def cli(ctx, ib_reports_dir):
 
     ctx.obj = Context()
 
+    import signal
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
 
 @cli.command()
+@click.option('-v', '--verbose', is_flag=True, default=False)
 @click.argument('year', default=0, type=int)
 @click.pass_obj
-def trades(ctx, year):
+def trades(ctx, year, verbose):
     """Print trades info & tax.
     """
-    process_trades(ctx, year)
+    process_trades(ctx, year, verbose=verbose)
 
 
 @cli.command()
