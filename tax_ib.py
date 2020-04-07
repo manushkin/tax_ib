@@ -48,6 +48,11 @@ class Dividend(object):
         self.broker_tax = 0
 
     @property
+    def amount_rur(self):
+        rate = usd_to_rub(self.date)
+        return round(self.amount * rate, 2)
+
+    @property
     def tax_ib(self):
         return self.broker_tax
 
@@ -58,7 +63,7 @@ class Dividend(object):
 
     @property
     def tax_me(self):
-        return self.amount * 0.13 - int(round(self.broker_tax, 0))
+        return self.amount * 0.13 - round(self.broker_tax, 2)
 
     @property
     def tax_me_rur(self):
@@ -146,8 +151,9 @@ def parse_dividends(filepaths):
                         symbol = kv['Description'].partition('(')[0].strip()
                         tax = abs(float(kv['Amount']))
 
-                        div = dividends[(date, symbol)]
-                        div.broker_tax = tax
+                        div = dividends.get((date, symbol))
+                        if div and not div.broker_tax:
+                            div.broker_tax = tax
 
     divs = dividends.values()
     divs.sort(key=lambda x: (x.date, x.symbol))
@@ -156,11 +162,12 @@ def parse_dividends(filepaths):
 
 class TaxItem(object):
     def __init__(self, buy_list, sel):
+        quantity = abs(sel.quantity)
         self.symbol = sel.symbol
-        self.quantity = abs(sel.quantity)
+        self.quantity = quantity
         self.date_sell = sel.date
         self.price_sell = sel.price
-        quantity = self.quantity
+        self.price_buy = sum(buy.quantity * buy.price for buy in buy_list) / quantity
 
         self.buy_usd = sum(buy.quantity * buy.price + buy.fee for buy in buy_list)
         self.sell_usd = quantity * sel.price - sel.fee
@@ -170,7 +177,6 @@ class TaxItem(object):
         self.profit_rur = self.sell_rur - self.buy_rur
 
         self.tax_rur = round(self.profit_rur * 0.13, 0)
-        self.price_buy = self.buy_usd / quantity
         self.fee = sel.fee + sum(buy.fee for buy in buy_list)
 
 
@@ -220,7 +226,7 @@ def print_table(items, keys, keys_total=None):
             row[key] = getattr(item, key)
         rows.append(row)
 
-    if keys_total:
+    if keys_total and len(rows) > 1:
         total = {}
         for row in rows:
             for key in keys_total:
@@ -281,14 +287,15 @@ def usd_to_rub(date):
 def process_trades(ctx, year, verbose=False):
     trades = parse_trades(ctx.ib_reports_files)
 
-    # print '===Trades'
-    # print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'])
+    if verbose:
+        print '===Trades'
+        print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'])
 
     keys = [
         'symbol', 'date_sell', 'quantity', 'price_sell', 'price_buy',
-        'fee', 'sell_usd', 'buy_usd', 'profit_usd', 'sell_rur', 'buy_rur', 'profit_rur', 'tax_rur',
+        'fee', 'sell_usd', 'buy_usd', 'sell_rur', 'buy_rur', 'profit_usd', 'profit_rur', 'tax_rur',
     ]
-    keys_total = ['fee', 'sell_usd', 'buy_usd', 'profit_usd', 'sell_rur', 'buy_rur', 'profit_rur', 'tax_rur']
+    keys_total = ['fee', 'sell_usd', 'buy_usd', 'sell_rur', 'buy_rur', 'profit_usd', 'profit_rur', 'tax_rur']
     if not verbose:
         keys = ['symbol', 'date_sell', 'quantity', 'sell_usd', 'buy_rur', 'tax_rur']
         keys_total = ['sell_usd', 'buy_rur', 'tax_rur']
@@ -317,8 +324,8 @@ def process_dividends(ctx, year):
     for div in dividends:
         year2divs[div.date.year].append(div)
 
-    keys = ['symbol', 'date', 'amount', 'tax_ib', 'tax_ib_rur', 'tax_me', 'tax_me_rur']
-    keys_total = ['amount', 'tax_ib', 'tax_ib_rur', 'tax_me', 'tax_me_rur']
+    keys = ['symbol', 'date', 'amount', 'tax_ib', 'tax_me', 'amount_rur', 'tax_ib_rur', 'tax_me_rur']
+    keys_total = ['amount', 'tax_ib', 'tax_me', 'amount_rur', 'tax_ib_rur', 'tax_me_rur']
     if year:
         print '==={}'.format(year)
         print_table(year2divs[year], keys, keys_total)
@@ -352,7 +359,7 @@ def cli(ctx, ib_reports_dir):
 
 
 @cli.command()
-@click.option('-v', '--verbose', is_flag=True, default=False)
+@click.option('-v', '--verbose', is_flag=True, default=True)
 @click.argument('year', default=0, type=int)
 @click.pass_obj
 def trades(ctx, year, verbose):
