@@ -7,6 +7,7 @@ import copy
 import csv
 import datetime
 import glob
+import unittest
 
 try:
     import click
@@ -161,7 +162,9 @@ def parse_dividends(filepaths):
 
 
 class TaxItem(object):
-    def __init__(self, buy_list, sel):
+    def __init__(self, buy_list, sel, usd2rub=None):
+        if usd2rub is None:
+            usd2rub = usd_to_rub
         quantity = abs(sel.quantity)
         self.symbol = sel.symbol
         self.quantity = quantity
@@ -172,22 +175,22 @@ class TaxItem(object):
         self.buy_usd = sum(buy.quantity * buy.price + buy.fee for buy in buy_list)
         self.sell_usd = quantity * sel.price - sel.fee
         self.profit_usd = self.sell_usd - self.buy_usd
-        self.buy_rur = sum(usd_to_rub(buy.date) * (buy.quantity * buy.price + buy.fee) for buy in buy_list)
-        self.sell_rur = self.sell_usd * usd_to_rub(sel.date)
+        self.buy_rur = sum(usd2rub(buy.date) * (buy.quantity * buy.price + buy.fee) for buy in buy_list)
+        self.sell_rur = self.sell_usd * usd2rub(sel.date)
         self.profit_rur = self.sell_rur - self.buy_rur
 
         self.tax_rur = round(self.profit_rur * 0.13, 0)
         self.fee = sel.fee + sum(buy.fee for buy in buy_list)
 
 
-def calc_tax(trades):
+def calc_tax(trades, usd2rub=None):
     items = []
     sym2blist = defaultdict(list)
     slist = []
     for trade in trades:
         if trade.is_buying:
             # buy
-            sym2blist[trade.symbol].append(trade)
+            sym2blist[trade.symbol].append(copy.copy(trade))
             continue
         slist.append(trade)
 
@@ -213,12 +216,12 @@ def calc_tax(trades):
                 quantity -= buy.quantity
                 buy_list.append(buy)
 
-        items.append(TaxItem(buy_list, sel))
+        items.append(TaxItem(buy_list, sel, usd2rub))
 
     return items
 
 
-def print_table(items, keys, keys_total=None):
+def print_table(items, keys, keys_total=None, pretty=None):
     rows = []
     for i, item in enumerate(items):
         row = {'N': i+1}
@@ -237,8 +240,13 @@ def print_table(items, keys, keys_total=None):
 
     for row in rows:
         for key, val in row.iteritems():
+            if isinstance(val, basestring):
+                continue
             if isinstance(val, float):
-                row[key] = '{:.2f}'.format(round(val, 2))
+                val = round(val, 2)
+            if pretty:
+                val = '{:,}'.format(val)
+            row[key] = val
 
     keys = ['N'] + keys[:]
     pt = prettytable.PrettyTable(keys)
@@ -276,20 +284,18 @@ def read_cbrf(filepaths):
 
 
 def usd_to_rub(date):
-    global _CBRF
-    if _CBRF is None:
-        _CBRF = read_cbrf(glob.glob('cbrf/*.csv'))
     if isinstance(date, basestring):
         date = str2date(date)
     return float(_CBRF[date])
 
 
-def process_trades(ctx, year, verbose=False):
-    trades = parse_trades(ctx.ib_reports_files)
+def process_trades(ctx, trades=None, year=None, verbose=False):
+    if not trades:
+        trades = parse_trades(ctx.ib_reports_files)
 
-    if verbose:
+    if verbose and not year:
         print '===Trades'
-        print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'])
+        print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'], pretty=ctx.pretty)
 
     keys = [
         'symbol', 'date_sell', 'quantity', 'price_sell', 'price_buy',
@@ -305,15 +311,15 @@ def process_trades(ctx, year, verbose=False):
         year2titems[titem.date_sell.year].append(titem)
 
     def print_one(year):
-        print '==={}'.format(year)
         titems = year2titems[year]
         titems.sort(key=lambda x: x.date_sell)
-        print_table(year2titems[year], keys, keys_total)
+        print_table(year2titems[year], keys, keys_total, pretty=ctx.pretty)
 
     if year:
         print_one(year)
     else:
         for year in sorted(year2titems):
+            print '==={}'.format(year)
             print_one(year)
 
 
@@ -328,28 +334,34 @@ def process_dividends(ctx, year):
     keys_total = ['amount', 'tax_ib', 'tax_me', 'amount_rur', 'tax_ib_rur', 'tax_me_rur']
     if year:
         print '==={}'.format(year)
-        print_table(year2divs[year], keys, keys_total)
+        print_table(year2divs[year], keys, keys_total, pretty=ctx.pretty)
     else:
         for year in sorted(year2divs):
             print '==={}'.format(year)
-            print_table(year2divs[year], keys, keys_total)
+            print_table(year2divs[year], keys, keys_total, pretty=ctx.pretty)
 
 
 @click.group(context_settings=dict(help_option_names=['-h', '--help']), invoke_without_command=True)
 @click.option('-d', '--reports-dir', 'ib_reports_dir', default='ib_reports')
+@click.option('-p', '--pretty', 'pretty', is_flag=True, help='Print pretty numbers')
 @click.pass_context
-def cli(ctx, ib_reports_dir):
+def cli(ctx, ib_reports_dir, pretty):
     """IB tax helper for Russia Federation.
     """
     class Context(object):
         def __init__(self):
             self.ib_reports_dir = 'ib_reports'
+            self.pretty = pretty
 
         @property
         def ib_reports_files(self):
             return glob.glob('{}/*.csv'.format(self.ib_reports_dir))
 
     ctx.obj = Context()
+
+    global _CBRF
+    if _CBRF is None:
+        _CBRF = read_cbrf(glob.glob('cbrf/*.csv'))
 
     import signal
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -365,7 +377,7 @@ def cli(ctx, ib_reports_dir):
 def trades(ctx, year, verbose):
     """Print trades info & tax.
     """
-    process_trades(ctx, year, verbose=verbose)
+    process_trades(ctx, year=year, verbose=verbose)
 
 
 @cli.command()
@@ -388,6 +400,45 @@ def divs(ctx, year):
 
 def main():
     cli()
+
+
+class Test(unittest.TestCase):
+
+    def test_calc_1_1(self):
+        date = datetime.date(2020, 4, 7)
+        fee = 0.0
+        trades = [
+            Trade(symbol='A', date=date, quantity=1, price=10., fee=fee),
+            Trade(symbol='A', date=date, quantity=-1, price=20., fee=fee),
+        ]
+        titems = calc_tax(trades, usd2rub=lambda x: 100.)
+        self.assertTrue(len(titems) == 1)
+        self.assertEqual(titems[0].profit_usd, 10.)
+
+    def test_calc_1_2(self):
+        date = datetime.date(2020, 4, 7)
+        fee = 0.0
+        trades = [
+            Trade(symbol='A', date=date, quantity=3, price=10., fee=fee),
+            Trade(symbol='A', date=date, quantity=-2, price=20., fee=fee),
+            Trade(symbol='A', date=date, quantity=-1, price=25., fee=fee),
+        ]
+        titems = calc_tax(trades, usd2rub=lambda x: 100.)
+        self.assertTrue(len(titems) == 2)
+        self.assertEqual(titems[0].profit_usd, 20.)
+        self.assertEqual(titems[1].profit_usd, 15.)
+
+    def test_calc_2_1(self):
+        date = datetime.date(2020, 4, 7)
+        fee = 0.0
+        trades = [
+            Trade(symbol='A', date=date, quantity=1, price=20., fee=fee),
+            Trade(symbol='A', date=date, quantity=2, price=10., fee=fee),
+            Trade(symbol='A', date=date, quantity=-3, price=30., fee=fee),
+        ]
+        titems = calc_tax(trades, usd2rub=lambda x: 100.)
+        self.assertTrue(len(titems) == 1)
+        self.assertEqual(titems[0].profit_usd, 50.)
 
 
 if __name__ == '__main__':
