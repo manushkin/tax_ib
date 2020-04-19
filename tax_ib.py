@@ -226,7 +226,7 @@ def calc_tax(trades, usd2rub=None):
 def print_table(items, keys, keys_total=None, pretty=None):
     rows = []
     for i, item in enumerate(items):
-        row = {'N': i+1}
+        row = {'N': i + 1}
         for key in keys:
             row[key] = getattr(item, key)
         rows.append(row)
@@ -242,7 +242,7 @@ def print_table(items, keys, keys_total=None, pretty=None):
 
     for row in rows:
         for key, val in six.iteritems(row):
-            if isinstance(val,  six.string_types):
+            if isinstance(val, six.string_types):
                 continue
             if isinstance(val, float):
                 val = round(val, 2)
