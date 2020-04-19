@@ -92,7 +92,7 @@ def parse_fee(fee):
     -1.02
     """
     a, _, b = fee.partition('.')
-    fee2 = a+'.' + b[:2]
+    fee2 = a + '.' + b[:2]
     return float(fee2)
 
 

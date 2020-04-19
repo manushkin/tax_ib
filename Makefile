@@ -1,9 +1,10 @@
 init:
-	pip install pipenv --upgrade
-	pipenv install --dev
+	python -m pip install --upgrade pip
+	pip install -r requirements.txt
+	pip install flake8
 
 test: test2 test3
-	pipenv run flake8 tax_ib.py
+	flake8 tax_ib.py
 
 test2:
 	python2 -m doctest tax_ib.py
