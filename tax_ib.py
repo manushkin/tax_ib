@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 # coding: utf-8
 
 from collections import defaultdict
@@ -7,17 +7,19 @@ import copy
 import csv
 import datetime
 import glob
+import six
 import unittest
 
 try:
     import click
     import prettytable
 except ImportError:
-    print 'Error: cant import click|prettytable'
-    print
-    print '1. use anaconda'
-    print 'or'
-    print '2. pip install click prettytable'
+    print("""\
+Error: cant import click|prettytable
+Use:
+  anaconda: conda install -c conda-forge prettytable
+or
+  pip:      pip install click prettytable""")
     exit(1)
 
 _CBRF = None
@@ -106,7 +108,7 @@ def parse_trades(filepaths):
                     keys = row
                     continue
                 if row[1] == 'Data':
-                    trade = dict(zip(keys, row))
+                    trade = dict(list(zip(keys, row)))
                     trades.append(Trade(
                         symbol=trade['Symbol'],
                         date=str2date(trade['Date/Time']),
@@ -131,7 +133,7 @@ def parse_dividends(filepaths):
                     if row[1] == 'Header':
                         keys = row
                     elif row[1] == 'Data':
-                        kv = dict(zip(keys, row))
+                        kv = dict(list(zip(keys, row)))
                         if kv['Currency'] == 'Total':
                             continue
                         date = str2date(kv['Date'])
@@ -145,7 +147,7 @@ def parse_dividends(filepaths):
                     if row[1] == 'Header':
                         keys = row
                     elif row[1] == 'Data':
-                        kv = dict(zip(keys, row))
+                        kv = dict(list(zip(keys, row)))
                         if kv['Currency'] == 'Total':
                             continue
                         date = str2date(kv['Date'])
@@ -156,7 +158,7 @@ def parse_dividends(filepaths):
                         if div and not div.broker_tax:
                             div.broker_tax = tax
 
-    divs = dividends.values()
+    divs = list(dividends.values())
     divs.sort(key=lambda x: (x.date, x.symbol))
     return divs
 
@@ -239,8 +241,8 @@ def print_table(items, keys, keys_total=None, pretty=None):
         rows.append(total)
 
     for row in rows:
-        for key, val in row.iteritems():
-            if isinstance(val, basestring):
+        for key, val in six.iteritems(row):
+            if isinstance(val,  six.string_types):
                 continue
             if isinstance(val, float):
                 val = round(val, 2)
@@ -255,7 +257,7 @@ def print_table(items, keys, keys_total=None, pretty=None):
     for row in rows:
         row = [row.get(key, '-') for key in keys]
         pt.add_row(row)
-    print pt.get_string()
+    print(pt.get_string())
 
 
 def read_cbrf(filepaths):
@@ -276,7 +278,7 @@ def read_cbrf(filepaths):
                 date2curs[date] = curs
                 if prev is not None:
                     curs = date2curs[prev]
-                    for day in xrange(1, (date - prev).days):
+                    for day in six.moves.range(1, (date - prev).days):
                         prev += datetime.timedelta(days=1)
                         date2curs[prev] = curs
                 prev = date
@@ -284,7 +286,7 @@ def read_cbrf(filepaths):
 
 
 def usd_to_rub(date):
-    if isinstance(date, basestring):
+    if isinstance(date, six.string_types):
         date = str2date(date)
     return float(_CBRF[date])
 
@@ -294,7 +296,7 @@ def process_trades(ctx, trades=None, year=None, verbose=False):
         trades = parse_trades(ctx.ib_reports_files)
 
     if verbose and not year:
-        print '===Trades'
+        print('===Trades')
         print_table(trades, ['symbol', 'date', 'quantity', 'price', 'proceeds', 'fee', 'basis', 'realized_pl'], pretty=ctx.pretty)
 
     keys = [
@@ -319,7 +321,7 @@ def process_trades(ctx, trades=None, year=None, verbose=False):
         print_one(year)
     else:
         for year in sorted(year2titems):
-            print '==={}'.format(year)
+            print('==={}'.format(year))
             print_one(year)
 
 
@@ -333,11 +335,11 @@ def process_dividends(ctx, year):
     keys = ['symbol', 'date', 'amount', 'tax_ib', 'tax_me', 'amount_rur', 'tax_ib_rur', 'tax_me_rur']
     keys_total = ['amount', 'tax_ib', 'tax_me', 'amount_rur', 'tax_ib_rur', 'tax_me_rur']
     if year:
-        print '==={}'.format(year)
+        print('==={}'.format(year))
         print_table(year2divs[year], keys, keys_total, pretty=ctx.pretty)
     else:
         for year in sorted(year2divs):
-            print '==={}'.format(year)
+            print('==={}'.format(year))
             print_table(year2divs[year], keys, keys_total, pretty=ctx.pretty)
 
 
